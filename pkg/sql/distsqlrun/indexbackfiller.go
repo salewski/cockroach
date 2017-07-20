@@ -25,6 +25,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlbase"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 )
 
 // indexBackfiller is a processor that backfills new indexes.
@@ -107,7 +108,7 @@ func (ib *indexBackfiller) init() error {
 }
 
 func (ib *indexBackfiller) runChunk(
-	ctx context.Context,
+	tctx context.Context,
 	mutations []sqlbase.DescriptorMutation,
 	sp roachpb.Span,
 	chunkSize int64,
@@ -121,6 +122,9 @@ func (ib *indexBackfiller) runChunk(
 	if ib.flowCtx.testingKnobs.RunAfterBackfillChunk != nil {
 		defer ib.flowCtx.testingKnobs.RunAfterBackfillChunk()
 	}
+
+	ctx, traceSpan := tracing.ChildSpan(tctx, "chunk")
+	defer tracing.FinishSpan(traceSpan)
 
 	added := make([]sqlbase.IndexDescriptor, len(mutations))
 	for i, m := range mutations {
@@ -205,6 +209,7 @@ func (ib *indexBackfiller) runChunk(
 
 	var batch *client.Batch
 	fixedMVCCTimestamp := hlc.Timestamp{WallTime: readAsOf}
+	log.VEventf(ctx, 2,"historical scan at timestamp %v", fixedMVCCTimestamp)
 	if err := ib.flowCtx.clientDB.Txn(ctx, func(ctx context.Context, txn *client.Txn) error {
 		txn.SetFixedTimestamp(fixedMVCCTimestamp)
 
@@ -217,10 +222,12 @@ func (ib *indexBackfiller) runChunk(
 
 	// Write the new index values.
 	if err := ib.flowCtx.clientDB.Txn(ctx, func(ctx context.Context, txn *client.Txn) error {
+		log.VEventf(ctx, 2, "Starting write transaction with batch size %d", len(batch.Results))
 		batch.SetTxn(txn)
 		return txn.CommitInBatch(ctx, batch)
 	}); err != nil {
 		backfillError := ConvertBackfillError(&ib.spec.Table, batch)
+		log.VEventf(ctx, 2,"failed write. retrying transactionally: %v", backfillError)
 		if sqlbase.IsUniquenessConstraintViolationError(backfillError) {
 			// Someone wrote a value above one of our new index entries. Since we did
 			// a historical read, we didn't have the most up-to-date value for the
@@ -229,7 +236,12 @@ func (ib *indexBackfiller) runChunk(
 			if err := transactionalChunk(ctx); err != nil {
 				return nil, err
 			}
+			log.VEventf(ctx, 2,"completed transactional write")
+		} else {
+			return nil, backfillError
 		}
+	} else {
+		log.VEventf(ctx, 2,"completed historical write")
 	}
 
 	return ib.fetcher.Key(), nil

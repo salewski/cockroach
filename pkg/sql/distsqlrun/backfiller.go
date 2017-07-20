@@ -121,7 +121,8 @@ func (b *backfiller) mainLoop(ctx context.Context) error {
 	start := timeutil.Now()
 	var resume roachpb.Span
 	sp := work
-	for row := int64(0); sp.Key != nil; row += chunkSize {
+	var nChunks, row = 0, int64(0)
+	for ; sp.Key != nil; nChunks, row = nChunks+1, row+chunkSize {
 		if log.V(2) {
 			log.Infof(ctx, "%s backfill (%d, %d) at row: %d, span: %s",
 				b.name, desc.ID, mutationID, row, sp)
@@ -136,6 +137,7 @@ func (b *backfiller) mainLoop(ctx context.Context) error {
 			break
 		}
 	}
+	log.VEventf(ctx, 2,"processed %d rows in %d chunks", row, nChunks)
 	return WriteResumeSpan(ctx,
 		b.flowCtx.clientDB,
 		b.spec.Table.ID,
