@@ -23,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlbase"
-	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 )
@@ -193,14 +192,16 @@ func (ib *indexBackfiller) runChunk(
 		})
 	}
 
-	if !util.IsMigrated() {
-		// If we're running a mixed cluster, some of the nodes will have an old
-		// implementation of InitPut that doesn't take into account the expected
-		// timetsamp. In that case, we have to run our chunk transactionally at the
-		// current time.
-		err := transactionalChunk(ctx)
-		return ib.fetcher.Key(), err
-	}
+	/*
+		if !util.IsMigrated() {
+			// If we're running a mixed cluster, some of the nodes will have an old
+			// implementation of InitPut that doesn't take into account the expected
+			// timetsamp. In that case, we have to run our chunk transactionally at the
+			// current time.
+			err := transactionalChunk(ctx)
+			return ib.fetcher.Key(), err
+		}
+	*/
 
 	var batch *client.Batch
 	fixedMVCCTimestamp := hlc.Timestamp{WallTime: readAsOf}
