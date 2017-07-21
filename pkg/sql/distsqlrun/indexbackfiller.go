@@ -220,11 +220,20 @@ func (ib *indexBackfiller) runChunk(
 		return nil, err
 	}
 
+	hasRunOnce := false
 	// Write the new index values.
 	if err := ib.flowCtx.clientDB.Txn(ctx, func(ctx context.Context, txn *client.Txn) error {
 		log.VEventf(ctx, 2, "Starting write transaction with batch size %d", len(batch.Results))
-		batch.SetTxn(txn)
-		return txn.CommitInBatch(ctx, batch)
+		if hasRunOnce {
+			batch.ResetWithTxn(txn)
+			return txn.Run(ctx, batch)
+		} else {
+			// CommitInBatch adds an endTxnReq, so we just need to do that once.
+			// If the transaction retries, we can run the batch directly.
+			hasRunOnce = true
+			batch.SetTxn(txn)
+			return txn.CommitInBatch(ctx, batch)
+		}
 	}); err != nil {
 		backfillError := ConvertBackfillError(&ib.spec.Table, batch)
 		log.VEventf(ctx, 2,"failed write. retrying transactionally: %v", backfillError)

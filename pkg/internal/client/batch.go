@@ -67,6 +67,14 @@ type Batch struct {
 	rowsStaticIdx int
 }
 
+func (b *Batch) ResetWithTxn(txn *Txn) {
+	b.pErr = nil
+	b.Results = nil
+	b.rowsStaticIdx = 0
+	b.Header = roachpb.Header{}
+	b.txn = txn
+}
+
 // RawResponse returns the BatchResponse which was the result of a successful
 // execution of the batch, and nil otherwise.
 func (b *Batch) RawResponse() *roachpb.BatchResponse {
