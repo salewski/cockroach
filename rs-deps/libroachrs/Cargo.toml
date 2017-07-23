@@ -6,6 +6,9 @@ authors = ["Tobias Schottdorf <tobias.schottdorf@gmail.com>"]
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+default = ["rocksdb/static-link"]
+
 [dependencies]
 libc = "*"
 
