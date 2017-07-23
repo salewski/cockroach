@@ -132,8 +132,8 @@ func (ib *indexBackfiller) runChunk(
 	}
 	secondaryIndexEntries := make([]sqlbase.IndexEntry, len(mutations))
 
-	buildIndexEntries := func(ctx context.Context, txn *client.Txn, timestamp hlc.Timestamp) (*client.Batch, error) {
-		b := &client.Batch{}
+	buildIndexEntries := func(ctx context.Context, txn *client.Txn, timestamp hlc.Timestamp) ([]sqlbase.IndexEntry, error) {
+		entries := make([]sqlbase.IndexEntry, 0, chunkSize*int64(len(added)))
 
 		// Get the next set of rows.
 		//
@@ -147,13 +147,13 @@ func (ib *indexBackfiller) runChunk(
 			ctx, txn, []roachpb.Span{sp}, true /* limitBatches */, chunkSize,
 		); err != nil {
 			log.Errorf(ctx, "scan error: %s", err)
-			return b, err
+			return nil, err
 		}
 
 		for i := int64(0); i < chunkSize; i++ {
 			encRow, err := ib.fetcher.NextRow(ctx, false /* traceKV */)
 			if err != nil {
-				return b, err
+				return nil, err
 			}
 			if encRow == nil {
 				break
@@ -162,12 +162,12 @@ func (ib *indexBackfiller) runChunk(
 				ib.rowVals = make(parser.Datums, len(encRow))
 			}
 			if err := sqlbase.EncDatumRowToDatums(ib.rowVals, encRow, &ib.da); err != nil {
-				return b, err
+				return nil, err
 			}
 			if err := sqlbase.EncodeSecondaryIndexes(
 				&ib.spec.Table, added, ib.colIdxMap,
 				ib.rowVals, secondaryIndexEntries); err != nil {
-				return b, err
+				return nil, err
 			}
 			for _, secondaryIndexEntry := range secondaryIndexEntries {
 				// Set the timestamp of the value we're writing to indicate that the
@@ -176,21 +176,27 @@ func (ib *indexBackfiller) runChunk(
 				// either a potential uniqueness constraint violation or a more
 				// up-to-date entry to write.
 				secondaryIndexEntry.Value.Timestamp = timestamp
-				b.InitPut(secondaryIndexEntry.Key, &secondaryIndexEntry.Value)
+				entries = append(entries, secondaryIndexEntry)
+				//b.InitPut(secondaryIndexEntry.Key, &secondaryIndexEntry.Value)
 			}
 		}
-		return b, nil
+		return entries, nil
 	}
 
 	transactionalChunk := func(ctx context.Context) error {
 		return ib.flowCtx.clientDB.Txn(ctx, func(ctx context.Context, txn *client.Txn) error {
-			newBatch, err := buildIndexEntries(ctx, txn, hlc.Timestamp{})
+			entries, err := buildIndexEntries(ctx, txn, hlc.Timestamp{})
 			if err != nil {
 				return err
 			}
-			newBatch.SetTxn(txn)
-			if err := txn.CommitInBatch(ctx, newBatch); err != nil {
-				return ConvertBackfillError(&ib.spec.Table, newBatch)
+			batch := txn.NewBatch()
+
+			for _, entry := range entries {
+				valueCopy := entry.Value
+				batch.InitPut(entry.Key, &valueCopy)
+			}
+			if err := txn.CommitInBatch(ctx, batch); err != nil {
+				return ConvertBackfillError(&ib.spec.Table, batch)
 			}
 			return nil
 		})
@@ -207,50 +213,50 @@ func (ib *indexBackfiller) runChunk(
 		}
 	*/
 
-	var batch *client.Batch
+	var entries []sqlbase.IndexEntry
 	fixedMVCCTimestamp := hlc.Timestamp{WallTime: readAsOf}
-	log.VEventf(ctx, 2,"historical scan at timestamp %v", fixedMVCCTimestamp)
+	log.VEventf(ctx, 2, "historical scan at timestamp %v", fixedMVCCTimestamp)
 	if err := ib.flowCtx.clientDB.Txn(ctx, func(ctx context.Context, txn *client.Txn) error {
 		txn.SetFixedTimestamp(fixedMVCCTimestamp)
 
 		var err error
-		batch, err = buildIndexEntries(ctx, txn, fixedMVCCTimestamp)
+		entries, err = buildIndexEntries(ctx, txn, fixedMVCCTimestamp)
 		return err
 	}); err != nil {
 		return nil, err
 	}
 
-	hasRunOnce := false
 	// Write the new index values.
 	if err := ib.flowCtx.clientDB.Txn(ctx, func(ctx context.Context, txn *client.Txn) error {
-		log.VEventf(ctx, 2, "Starting write transaction with batch size %d", len(batch.Results))
-		if hasRunOnce {
-			batch.ResetWithTxn(txn)
-			return txn.Run(ctx, batch)
-		} else {
-			// CommitInBatch adds an endTxnReq, so we just need to do that once.
-			// If the transaction retries, we can run the batch directly.
-			hasRunOnce = true
-			batch.SetTxn(txn)
-			return txn.CommitInBatch(ctx, batch)
+		log.VEventf(ctx, 2, "Starting write transaction with batch size %d", len(entries))
+		batch := txn.NewBatch()
+
+		for _, entry := range entries {
+			valueCopy := entry.Value
+			batch.InitPut(entry.Key, &valueCopy)
 		}
+		if err := txn.CommitInBatch(ctx, batch); err != nil {
+			return ConvertBackfillError(&ib.spec.Table, batch)
+		}
+		return nil
 	}); err != nil {
-		backfillError := ConvertBackfillError(&ib.spec.Table, batch)
-		log.VEventf(ctx, 2,"failed write. retrying transactionally: %v", backfillError)
-		if sqlbase.IsUniquenessConstraintViolationError(backfillError) {
+		if sqlbase.IsUniquenessConstraintViolationError(err) {
+			log.VEventf(ctx, 2, "failed write. retrying transactionally: %v", err)
 			// Someone wrote a value above one of our new index entries. Since we did
 			// a historical read, we didn't have the most up-to-date value for the
 			// row we were backfilling so we can't just blindly write it to the
 			// index. Instead, we retry the transaction at the present timestamp.
 			if err := transactionalChunk(ctx); err != nil {
+				log.VEventf(ctx, 2, "failed transactional write: %v", err)
 				return nil, err
 			}
-			log.VEventf(ctx, 2,"completed transactional write")
+			log.VEventf(ctx, 2, "completed transactional write")
 		} else {
-			return nil, backfillError
+			log.VEventf(ctx, 2, "failed write due to other error, not retrying: %v %T", err, err)
+			return nil, err
 		}
 	} else {
-		log.VEventf(ctx, 2,"completed historical write")
+		log.VEventf(ctx, 2, "completed historical write")
 	}
 
 	return ib.fetcher.Key(), nil
