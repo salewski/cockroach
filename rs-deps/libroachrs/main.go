@@ -5,7 +5,7 @@ import (
 )
 
 /*
-#cgo LDFLAGS: -L./target/release -lruststorage
+#cgo LDFLAGS: -L./target/release -lc++ -lSystem -lresolv -lc -lm -lruststorage
 #include "./ruststorage.h"
 */
 import "C"
