@@ -1348,7 +1348,7 @@ func mvccInitPutUsingIter(
 	err := mvccPutUsingIter(ctx, engine, iter, ms, key, timestamp, noValue, txn,
 		func(existVal *roachpb.Value) ([]byte, error) {
 			if existVal != nil {
-				if !bytes.Equal(value.RawBytes, existVal.RawBytes) || (value.Timestamp != hlc.Timestamp{} && value.Timestamp != existVal.Timestamp) {
+				if !bytes.Equal(value.RawBytes, existVal.RawBytes) {
 					log.VEventf(ctx, 2, "InitPut failure: expected %v, got %v", &value, existVal)
 					return nil, &roachpb.ConditionFailedError{
 						ActualValue: existVal.ShallowClone(),
