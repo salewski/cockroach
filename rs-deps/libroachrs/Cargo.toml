@@ -8,4 +8,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 libc = "*"
-rocksdb = "*"
+
+[dependencies.rocksdb]
+git = "https://github.com/pingcap/rust-rocksdb.git"
