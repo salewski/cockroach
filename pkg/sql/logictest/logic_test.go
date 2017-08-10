@@ -680,7 +680,9 @@ func (t *logicTest) setup(cfg testClusterConfig) {
 		server := t.cluster.Server(i)
 		// We want to collect SQL per-statement statistics in tests,
 		// regardless of what the environment / config says.
-		server.ClusterSettings().StmtStatsEnable.Override(true)
+		st := server.ClusterSettings()
+		st.Manual.Store(true)
+		st.StmtStatsEnable.Override(true)
 
 		// NB: We must set this before the Exec() below as that opens a session,
 		// locking in the DistSQL setting for that session. If we change it
@@ -688,7 +690,9 @@ func (t *logicTest) setup(cfg testClusterConfig) {
 		// existing Session.
 		if cfg.overrideDistSQLMode != "" {
 			mode := cluster.DistSQLExecModeFromString(cfg.overrideDistSQLMode)
-			server.ClusterSettings().DistSQLClusterExecMode.Override(int64(mode))
+			st := server.ClusterSettings()
+			st.Manual.Store(true)
+			st.DistSQLClusterExecMode.Override(int64(mode))
 		}
 	}
 

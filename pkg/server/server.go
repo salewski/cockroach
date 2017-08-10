@@ -250,7 +250,7 @@ func NewServer(cfg Config, stopper *stop.Stopper) (*Server, error) {
 	)
 
 	s.raftTransport = storage.NewRaftTransport(
-		s.cfg.AmbientCtx, cluster.MakeClusterSettings(), storage.GossipAddressResolver(s.gossip), s.grpc, s.rpcContext,
+		s.cfg.AmbientCtx, st, storage.GossipAddressResolver(s.gossip), s.grpc, s.rpcContext,
 	)
 
 	s.kvDB = kv.NewDBServer(s.cfg.Config, s.txnCoordSender, s.stopper)

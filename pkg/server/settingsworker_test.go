@@ -83,7 +83,6 @@ func TestSettingsRefresh(t *testing.T) {
 	s, rawDB, _ := serverutils.StartServer(t, base.TestServerArgs{})
 	defer s.Stopper().Stop(context.TODO())
 
-	s.ClusterSettings().Manual.Store(false)
 	r := s.ClusterSettings().Registry
 	strA, intA, durationA, byteSizeA, _ := register(r)
 
@@ -209,7 +208,6 @@ func TestSettingsSetAndShow(t *testing.T) {
 	s, rawDB, _ := serverutils.StartServer(t, base.TestServerArgs{})
 	defer s.Stopper().Stop(context.TODO())
 
-	s.ClusterSettings().Manual.Store(false)
 	_, _, durationA, byteSizeA, enumA := register(s.ClusterSettings().Registry)
 
 	db := sqlutils.MakeSQLRunner(t, rawDB)

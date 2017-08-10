@@ -37,7 +37,6 @@ func TestSettingAndCheckingLicense(t *testing.T) {
 	}.Encode()
 
 	st := cluster.MakeClusterSettings()
-	st.Manual.Store(false)
 
 	for i, tc := range []struct {
 		lic          string
@@ -75,7 +74,6 @@ func TestSettingBadLicenseStrings(t *testing.T) {
 		{"cl-0-blah", "invalid license string"},
 	} {
 		st := cluster.MakeClusterSettings()
-		st.Manual.Store(false)
 		u := st.MakeUpdater()
 
 		if err := u.Set("enterprise.license", tc.lic, "s"); !testutils.IsError(

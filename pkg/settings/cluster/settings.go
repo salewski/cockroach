@@ -15,6 +15,7 @@
 package cluster
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"strings"
@@ -236,9 +237,9 @@ type CCLSettings struct {
 // node, there is a single instance of ClusterSetting which is shared across all
 // of its components.
 type Settings struct {
-	// Manual, if set, lets this ClusterSetting's MakeUpdater method return a
-	// dummy updater that simply throws away all values. This is for use in
-	// tests for which manual control is desired.
+	// Manual defaults to false. If set, lets this ClusterSetting's MakeUpdater
+	// method return a dummy updater that simply throws away all values. This is
+	// for use in tests for which manual control is desired.
 	Manual *atomic.Value // bool
 	// A Registry populated with all of the individual cluster settings.
 	settings.Registry
@@ -254,7 +255,54 @@ type Settings struct {
 	UISettings
 	CCLSettings
 
-	Version *settings.StateMachineSetting
+	Version ExposedClusterVersion
+}
+
+const keyVersionSetting = "version"
+
+func (s *Settings) InitializeVersion(cv ClusterVersion) error {
+	b, err := cv.Marshal()
+	if err != nil {
+		return err
+	}
+	updater := settings.MakePreservingUpdater(s.Registry)
+	if err := updater.Set(keyVersionSetting, string(b), s.Version.version.Typ()); err != nil {
+		return err
+	}
+	s.Version.baseVersion.Store(&cv)
+	return nil
+}
+
+type ExposedClusterVersion struct {
+	baseVersion atomic.Value // stores *ClusterVersion
+	version     *settings.StateMachineSetting
+}
+
+// Version returns the minimum cluster version the caller may assume is in
+// effect. It must not be called until the setting has been initialized.
+func (ecv *ExposedClusterVersion) Version() ClusterVersion {
+	_, obj, err := ecv.version.Transformer([]byte(ecv.version.Get()), nil)
+	if err != nil {
+		log.Fatal(context.Background(), err)
+	}
+	v := *((*ClusterVersion)(obj.(*stringedVersion)))
+	if (v == ClusterVersion{}) {
+		log.Fatal(context.Background(), "Version() was called before having been initialized")
+	}
+	return v
+}
+
+// IsActive returns true if the features of the supplied version are active at
+// the running version.
+func (ecv *ExposedClusterVersion) IsActive(v roachpb.Version) bool {
+	return !ecv.Version().UseVersion.Less(v)
+}
+
+func MakeClusterSettings() *Settings {
+	st := MakeClusterSettingss()
+	// Enable all features.
+	st.InitializeVersion(BootstrapVersion())
+	return st
 }
 
 // MakeClusterSettings makes a new ClusterSettings object. Note that by default,
@@ -262,21 +310,27 @@ type Settings struct {
 // is a NoopUpdater. For a "real" non-testing server, this field must be set to
 // true or the settings won't be updated when the persisted settings table is
 // updated.
-func MakeClusterSettings() *Settings {
+func MakeClusterSettingss() *Settings {
 	var s Settings
 	r := settings.NewRegistry()
 	s.Registry = r
+
 	var manual atomic.Value
 	s.Manual = &manual
 
-	s.Manual.Store(true)
-
-	s.Version = r.RegisterStateMachineSetting("version",
+	// Initialize the setting. Note that it starts out with the zero cluster
+	// version, for which the transformer accepts any new version. After that,
+	// it'll only accept "valid bumps". We use this to initialize the variable
+	// lazily, after we have read the current version from the engines. After
+	// that, updates come from Gossip and need to be compatible with the engine
+	// version.
+	s.Version.baseVersion.Store(&ClusterVersion{})
+	s.Version.version = r.RegisterStateMachineSetting(keyVersionSetting,
 		"set the active cluster version in the format '<major>.<minor>'.", // hide optional `-<unstable>`
-		versionTransformer(ClusterVersion{
-			MinimumVersion: ServerVersion,
-			UseVersion:     ServerVersion,
-		}))
+		versionTransformer(func() ClusterVersion {
+			return *s.Version.baseVersion.Load().(*ClusterVersion)
+		}),
+	)
 
 	s.Tracer = tracing.NewTracer()
 
@@ -623,7 +677,7 @@ func (sv *stringedVersion) String() string {
 	return sv.MinimumVersion.String()
 }
 
-func versionTransformer(defaultVersion ClusterVersion) settings.TransformerFn {
+func versionTransformer(defaultVersion func() ClusterVersion) settings.TransformerFn {
 	return func(curRawProto []byte, versionBump *string) (newRawProto []byte, versionStringer interface{}, _ error) {
 		defer func() {
 			if versionStringer != nil {
@@ -634,7 +688,7 @@ func versionTransformer(defaultVersion ClusterVersion) settings.TransformerFn {
 
 		// If no old value supplied, fill in the default.
 		if curRawProto == nil {
-			oldV = defaultVersion
+			oldV = defaultVersion()
 			var err error
 			curRawProto, err = oldV.Marshal()
 			if err != nil {
@@ -667,7 +721,7 @@ func versionTransformer(defaultVersion ClusterVersion) settings.TransformerFn {
 			return nil, nil, errors.Errorf("cannot downgrade from %s to %s", oldV.MinimumVersion, minVersion)
 		}
 
-		if !oldV.MinimumVersion.CanBump(minVersion) {
+		if oldV != (ClusterVersion{}) && !oldV.MinimumVersion.CanBump(minVersion) {
 			return nil, nil, errors.Errorf("cannot upgrade directly from %s to %s", oldV.MinimumVersion, minVersion)
 		}
 
