@@ -21,14 +21,19 @@ import (
 	"path/filepath"
 	"strings"
 
+	"google.golang.org/api/option"
+
 	gcs "cloud.google.com/go/storage"
 	azr "github.com/Azure/azure-sdk-for-go/storage"
 	"github.com/pkg/errors"
 	"github.com/rlmcpherson/s3gof3r"
 	"golang.org/x/net/context"
+	"golang.org/x/oauth2/google"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/settings"
+	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 )
 
@@ -42,6 +47,10 @@ const (
 	AzureAccountNameParam = "AZURE_ACCOUNT_NAME"
 	// AzureAccountKeyParam is the query parameter for account_key in an azure URI.
 	AzureAccountKeyParam = "AZURE_ACCOUNT_KEY"
+
+	// StorageKeyParam is the query parameter for the cluster settings named
+	// key in a URI.
+	StorageKeyParam = "STORAGE_KEY"
 )
 
 // ExportStorageConfFromURI generates an ExportStorage config from a URI string.
@@ -72,6 +81,7 @@ func ExportStorageConfFromURI(path string) (roachpb.ExportStorage, error) {
 		conf.GoogleCloudConfig = &roachpb.ExportStorage_GCS{
 			Bucket: uri.Host,
 			Prefix: uri.Path,
+			Key:    uri.Query().Get(StorageKeyParam),
 		}
 		conf.GoogleCloudConfig.Prefix = strings.TrimLeft(conf.GoogleCloudConfig.Prefix, "/")
 	case "azure":
@@ -118,7 +128,7 @@ func SanitizeExportStorageURI(path string) (string, error) {
 }
 
 // MakeExportStorage creates an ExportStorage from the given config.
-func MakeExportStorage(ctx context.Context, dest roachpb.ExportStorage) (ExportStorage, error) {
+func MakeExportStorage(ctx context.Context, dest roachpb.ExportStorage, settings *cluster.Settings) (ExportStorage, error) {
 	switch dest.Provider {
 	case roachpb.ExportStorageProvider_LocalFile:
 		return makeLocalStorage(dest.LocalFile.Path)
@@ -127,7 +137,7 @@ func MakeExportStorage(ctx context.Context, dest roachpb.ExportStorage) (ExportS
 	case roachpb.ExportStorageProvider_S3:
 		return makeS3Storage(dest.S3Config)
 	case roachpb.ExportStorageProvider_GoogleCloud:
-		return makeGCSStorage(ctx, dest.GoogleCloudConfig)
+		return makeGCSStorage(ctx, dest.GoogleCloudConfig, settings)
 	case roachpb.ExportStorageProvider_Azure:
 		return makeAzureStorage(dest.AzureConfig)
 	}
@@ -164,6 +174,21 @@ type ExportStorage interface {
 	// Size returns the length of the named file in bytes.
 	Size(ctx context.Context, basename string) (int64, error)
 }
+
+const (
+	clusterKeyPrefix           = "storage.keys."
+	clusterKeyDefaultNamespace = ".default"
+	clusterKeyGCS              = clusterKeyPrefix + ".gcs.jsonkey"
+	clusterKeyGCSDefault       = clusterKeyGCS + clusterKeyDefaultNamespace
+)
+
+var (
+	gcsDefault = settings.RegisterStringSetting(
+		clusterKeyGCSDefault,
+		"if set, JSON key to use during Google Cloud Storage operations",
+		"",
+	)
+)
 
 type localFileStorage struct {
 	base string
@@ -400,11 +425,40 @@ func (g *gcsStorage) Conf() roachpb.ExportStorage {
 	}
 }
 
-func makeGCSStorage(ctx context.Context, conf *roachpb.ExportStorage_GCS) (ExportStorage, error) {
+func makeGCSStorage(ctx context.Context, conf *roachpb.ExportStorage_GCS, settings *cluster.Settings) (ExportStorage, error) {
 	if conf == nil {
 		return nil, errors.Errorf("google cloud storage upload requested but info missing")
 	}
-	g, err := gcs.NewClient(ctx)
+	const scope = gcs.ScopeReadWrite
+	opts := []option.ClientOption{
+		option.WithScopes(scope),
+	}
+
+	// "default": only use the key in the settings; error if not present.
+	// "environment": only use the environment data.
+	// "": if default key is in the settings use it; otherwise use environment data.
+	switch conf.Key {
+	case "", "default":
+		var key string
+		if settings != nil {
+			key = gcsDefault.Get(&settings.SV)
+		}
+		// We expect a key to be present if default is specified.
+		if conf.Key == "default" && key == "" {
+			return nil, errors.Errorf("expected settings value for %s", clusterKeyGCSDefault)
+		}
+		if key != "" {
+			source, err := google.JWTConfigFromJSON([]byte(key), scope)
+			if err != nil {
+				return nil, errors.Wrap(err, "creating GCS oauth token source")
+			}
+			opts = append(opts, option.WithTokenSource(source.TokenSource(ctx)))
+		}
+	case "environment":
+	default:
+		return nil, errors.Errorf("unsupported value %s for %s", conf.Key, StorageKeyParam)
+	}
+	g, err := gcs.NewClient(ctx, opts...)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create google cloud client")
 	}

@@ -26,6 +26,7 @@ import (
 	"github.com/rlmcpherson/s3gof3r"
 	"golang.org/x/net/context"
 
+	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 )
@@ -39,13 +40,21 @@ func appendPath(t *testing.T, s, add string) string {
 	return u.String()
 }
 
+var testSettings *cluster.Settings
+
+func init() {
+	testSettings = cluster.MakeTestingClusterSettings()
+	up := testSettings.MakeUpdater()
+	up.Set(clusterKeyGCSDefault, os.Getenv("GS_JSONKEY"), gcsDefault.Typ())
+}
+
 func storeFromURI(ctx context.Context, t *testing.T, uri string) ExportStorage {
 	conf, err := ExportStorageConfFromURI(uri)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Setup a sink for the given args.
-	s, err := MakeExportStorage(ctx, conf)
+	s, err := MakeExportStorage(ctx, conf, testSettings)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +69,7 @@ func testExportStore(t *testing.T, storeURI string, skipSingleFile, skipSize boo
 		t.Fatal(err)
 	}
 	// Setup a sink for the given args.
-	s, err := MakeExportStorage(ctx, conf)
+	s, err := MakeExportStorage(ctx, conf, testSettings)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +305,7 @@ func TestPutHttp(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		s, err := MakeExportStorage(ctx, conf)
+		s, err := MakeExportStorage(ctx, conf, testSettings)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -363,7 +372,9 @@ func TestPutGoogleCloud(t *testing.T) {
 	// TODO(dt): this prevents leaking an http conn goroutine.
 	http.DefaultTransport.(*http.Transport).DisableKeepAlives = true
 
-	testExportStore(t, fmt.Sprintf("gs://%s/%s", bucket, "backup-test"), false, false)
+	//testExportStore(t, fmt.Sprintf("gs://%s/%s", bucket, "backup-test"), false, false)
+	//testExportStore(t, fmt.Sprintf("gs://%s/%s?%s=default", bucket, "backup-test", StorageKeyParam), false, false)
+	testExportStore(t, fmt.Sprintf("gs://%s/%s?%s=environment", bucket, "backup-test", StorageKeyParam), false, false)
 }
 
 func TestPutAzure(t *testing.T) {
