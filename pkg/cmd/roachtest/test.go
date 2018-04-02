@@ -457,19 +457,20 @@ func (t *test) run(out io.Writer, done func(failed bool)) {
 							out, "##teamcity[testFailed name='%s' details='%s' flowId='%s']\n",
 							t.Name(), teamcityEscape(string(t.mu.output)), t.Name(),
 						)
+					} else {
+						fmt.Fprintf(out, "--- FAIL: %s (%s)\n%s", t.Name(), dstr, t.mu.output)
 					}
-					fmt.Fprintf(out, "--- FAIL: %s (%s)\n%s", t.Name(), dstr, t.mu.output)
-				} else {
+				} else if !teamCity {
 					fmt.Fprintf(out, "--- PASS: %s (%s)\n", t.Name(), dstr)
-					// if testFailed is not present, teamCity regards the test as successful.
+					// If `##teamcity[testFailed ...] is not present, TeamCity regards the test as successful.
 				}
 				if teamCity {
 					fmt.Fprintf(out, "##teamcity[testFinished name='%s' flowId='%s']\n", t.Name(), t.Name())
-					escapedTestName := teamcityNameEscape(t.Name())
-					artifactsGlobPath := filepath.Join(artifacts, escapedTestName, "**")
-					artifactsSpec := fmt.Sprintf("%s => %s", artifactsGlobPath, escapedTestName)
-					// teamcity doesn't parse a flowId if it's here.
-					fmt.Fprintf(out, "##teamcity[publishArtifacts '%s']\n", artifactsSpec)
+					fmt.Fprintf(
+						out,
+						"##teamcity[publishArtifacts '%s|n']\n",
+						filepath.Join(artifacts, t.Name(), "**"),
+					)
 				}
 			}
 
@@ -494,7 +495,7 @@ func (t *test) run(out io.Writer, done func(failed bool)) {
 
 // teamcityEscape escapes a string for use as <value> in a key='<value>' attribute
 // in teamcity build output marker.
-// Documentation here: https://confluence.jetbrains.com/display/TCD8/Build+Script+Interaction+with+TeamCity#BuildScriptInteractionwithTeamCity-servMsgsServiceMessages
+// Documentation here: https://confluence.jetbrains.com/display/TCD10/Build+Script+Interaction+with+TeamCity#BuildScriptInteractionwithTeamCity-Escapedvalues
 func teamcityEscape(s string) string {
 	r := strings.NewReplacer(
 		"\n", "|n",
@@ -504,8 +505,4 @@ func teamcityEscape(s string) string {
 		"]", "|]",
 	)
 	return r.Replace(s)
-}
-
-func teamcityNameEscape(name string) string {
-	return strings.Replace(name, ",", "_", -1)
 }
