@@ -451,26 +451,28 @@ func (t *test) run(out io.Writer, done func(failed bool)) {
 
 			if !dryrun {
 				dstr := fmt.Sprintf("%.2fs", t.duration().Seconds())
+
 				if t.Failed() {
 					if teamCity {
 						fmt.Fprintf(
 							out, "##teamcity[testFailed name='%s' details='%s' flowId='%s']\n",
 							t.Name(), teamcityEscape(string(t.mu.output)), t.Name(),
 						)
-					} else {
-						fmt.Fprintf(out, "--- FAIL: %s (%s)\n%s", t.Name(), dstr, t.mu.output)
 					}
-				} else if !teamCity {
+					fmt.Fprintf(out, "--- FAIL: %s (%s)\n%s", t.Name(), dstr, t.mu.output)
+				} else {
 					fmt.Fprintf(out, "--- PASS: %s (%s)\n", t.Name(), dstr)
 					// If `##teamcity[testFailed ...] is not present, TeamCity regards the test as successful.
 				}
+
 				if teamCity {
 					fmt.Fprintf(out, "##teamcity[testFinished name='%s' flowId='%s']\n", t.Name(), t.Name())
-					fmt.Fprintf(
-						out,
-						"##teamcity[publishArtifacts '%s|n']\n",
-						filepath.Join(artifacts, t.Name(), "**"),
-					)
+
+					escapedTestName := teamcityNameEscape(t.Name())
+					artifactsGlobPath := filepath.Join(artifacts, escapedTestName, "**")
+					artifactsSpec := fmt.Sprintf("%s => %s", artifactsGlobPath, escapedTestName)
+					// teamcity doesn't parse a flowId if it's here.
+					fmt.Fprintf(out, "##teamcity[publishArtifacts '%s']\n", artifactsSpec)
 				}
 			}
 
@@ -505,4 +507,8 @@ func teamcityEscape(s string) string {
 		"]", "|]",
 	)
 	return r.Replace(s)
+}
+
+func teamcityNameEscape(name string) string {
+	return strings.Replace(name, ",", "_", -1)
 }
